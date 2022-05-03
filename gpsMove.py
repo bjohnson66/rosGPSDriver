@@ -11,6 +11,7 @@ from sensor_msgs.msg import Imu
 #Used to convert Quaternion to euler angles
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
+
 class GPSDriver:
 	def __init__(self):
 		#'boat_driver' is an arbitrary name, it could be anything
@@ -172,8 +173,3 @@ if __name__ == '__main__':
 				rospy.sleep(0.08)
 			
 		boolean = int(input("Go again? 1 = yes, else quit"))
-		
-	
-
-		
-		
