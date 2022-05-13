@@ -11,16 +11,39 @@ from sensor_msgs.msg import Imu
 #Used to convert Quaternion to euler angles
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
-#################################################TODO########################################################
-#Fix K constants, its really unstable right now
-#Add comment block above GPS Driver class
+
+################################################################################################################
+#Class Name: GPSDriver
+#Programmer: Bradley Johnson
+#Date: 5/13/2022
+#Description: This class is responsible for driving our VRX boat. It sends thrust commands to the left and right
+#		thruster, and can drive its self to a location based off of imu and gps data. It also publishes 
+#		debug information.
+#Methods: drive(self, leftMag = 1.0, rightMag = 1.0, Print = False)
+#	   	*Will publish a left and right magnitude to the thruster msgs (must be between -1 and 1 as a Float32)
+#	   arrivedAtLocation(self, targetLat, targetLong, Print = False, distance = 0.00005)
+#		*returns true if the craft is within5.5 meters (or less experimentally) 
+#	   drive_To_Point_M(self, targetLat, targetLong, Debug = False, Print = False)
+#		*one call of this method will preform 1 drive operation to navigate the craft to the target.
+#		*will return true once arrived at location returns true
+#		*publishes debug info if Debug is True
 #
+# Published Topics: 
+#	'wamv/thrusters/right_thrust_cmd': Float32, queue_size=10
+#	'wamv/thrusters/left_thrust_cmd': Float32, queue_size=10
+#	'Xerr':  Float32, queue_size =10
+#	'Yerr':  Float32, queue_size =10
+#	'V': Float32, queue_size =10
+#	'W': Float32, queue_size =10
+#	'intX': Float32, queue_size =10
+#	'intY': Float32, queue_size =10
+#Refresh Rate: 
+#	100hz
+#
+#Subscribed Topics:
+#	'wamv/sensors/imu/imu/data': NavSatFix, queue_size=10
+#	'wamv/sensors/imu/imu/data': Imu, queue_size = 10
 #################################################################################################################
-
-
-
-
-
 class GPSDriver:
 	##########################
 	#Constructor:
@@ -45,13 +68,17 @@ class GPSDriver:
 		######################################################
 		self.right_thrust_pub = rospy.Publisher(self.right_thrust,Float32, queue_size=10)
 		self.left_thrust_pub = rospy.Publisher(self.left_thrust, Float32, queue_size=10)
+		
+		################################################
+		#Publishers to help debug, usig Rqt plot
+		################################################
+		self.debug_Xerr_pub = rospy.Publisher('Xerr', Float32, queue_size =10)
+		self.debug_Yerr_pub = rospy.Publisher('Yerr', Float32, queue_size =10)
+		self.debug_V_pub = rospy.Publisher('V', Float32, queue_size =10)
+		self.debug_W_pub = rospy.Publisher('W', Float32, queue_size =10)
+		self.debug_integral_x_pub = rospy.Publisher('intX', Float32, queue_size =10)
+		self.debug_integral_y_pub = rospy.Publisher('intY', Float32, queue_size =10)
 			
-			
-		#Commented out because the real IMARC boat only has left and right thrust control	
-		#self.right_angle_pub = rospy.Publisher(self.right_angle,Float32, queue_size=10)
-		#self.left_angle_pub = rospy.Publisher(self.left_angle,Float32, queue_size=10)
-		#self.lat_thrust_pub = rospy.Publisher(self.lat_thrust, Float32, queue_size=10)
-		#self.lat_angle_pub = rospy.Publisher(self.lat_angle,Float32, queue_size=10)
 		
 		#not needed yet TODO
 		# set p initial accelerations to 0
@@ -67,6 +94,7 @@ class GPSDriver:
 		
 		rospy.sleep(0.5)
 		
+
 		self.gps_sub = rospy.Subscriber(self.gps,NavSatFix,self.gps_cb, queue_size=10)
 		self.imu_sub = rospy.Subscriber(self.imu,Imu,self.imu_cb, queue_size=10) 
 		
@@ -139,9 +167,7 @@ class GPSDriver:
 		if (((self.lat - targetLat) * (self.lat - targetLat) + (self.long - targetLong) * (self.long - targetLong)) < distance*distance):
 			if (Print):
 				print("Arrived at ", targetLat, " , ", targetLong)
-			
 			return True #We've made it within a few meters of the target
-			
 		#else return false
 		return False;	
 		
@@ -160,12 +186,16 @@ class GPSDriver:
 	#	Print: boolean to determine whether or not the funciton prints diagnostic informaion to
 	#	       terminal. Defaults to false
 	####################################################################
-	def drive_To_Point_M(self, targetLat, targetLong, Print = False):
-		#Consants
-		KPV = 1
-		KPW = 1
-		KI = 1
-		KD = 1
+	def drive_To_Point_M(self, targetLat, targetLong, Debug = False, Print = False):
+		#Consants may need more balancing
+		KPV = 6000
+		KIV = 5
+		KDV = 0.1
+
+		KPW = 6000
+		KIW = 0.5
+		KDW = 0.1
+	
 		C = 0.9
 		D = 0.9
 
@@ -198,21 +228,6 @@ class GPSDriver:
 		self.e_integral_sum_y += Yerr*0.01
 
 
-
-		#TODO balance/fix constants
-		#Consants TODO place at top again
-		KPV = 100
-		KIV = 5
-		KDV = 5
-		
-		KPW = 100
-		KIW = 0
-		KDW = 0
-		
-		
-		C = 0.9
-		D = 0.9
-
 		V = KPV*Xerr + KIV*self.e_integral_sum_x + KDV*((Xerr-self.prev_x_err)*100)
 		W = KPW*Yerr + KIW*self.e_integral_sum_y + KDW*((Yerr-self.prev_y_err)*100)
 		
@@ -227,16 +242,33 @@ class GPSDriver:
 		Pow_L = ((-W/D) + (V/C))/2
 		Pow_R = ((V/C) - Pow_L)
 		
+		
+		#That solved for what the raw power should be, but we can only go from -1 to 1
+		abs_Pow_L = np.abs(Pow_L)
+		abs_Pow_R = np.abs(Pow_R)
+		
+		if ((abs_Pow_L > 1) or (abs_Pow_R >1)):
+			if (abs_Pow_R > abs_Pow_L):
+				Pow_L = np.abs(Pow_L/Pow_R)*np.sign(Pow_L)
+				Pow_R = np.sign(Pow_R)*1
+			elif (abs_Pow_L > abs_Pow_R):
+				Pow_R = np.abs(Pow_R/Pow_L)*np.sign(Pow_R)
+				Pow_L = np.sign(Pow_L)*1	
+			else:
+				Pow_R = np.sign(Pow_R)*1
+				Pow_L = np.sign(Pow_L)*1
+		
+		if (Debug):
+			self.debug_Xerr_pub.publish(Xerr)
+			self.debug_Yerr_pub.publish(Yerr)
+			self.debug_V_pub.publish(V)
+			self.debug_W_pub.publish(W)
+			self.debug_integral_x_pub.publish(self.e_integral_sum_x)
+			self.debug_integral_y_pub.publish(self.e_integral_sum_y)
+			
 		if (Print):
 			print("Left: " + str(Pow_L) + " Right: " + str(Pow_R))
 			rospy.sleep(0.01)
-
-			
-			
-			
-			
-			
-			
 			
 			
 			
@@ -264,22 +296,11 @@ if __name__ == '__main__':
 	boat = GPSDriver()
 	boolean = 1
 	while(boolean == 1):
-	#TODO commmented part
-		#We dont need this part anymore, fr degugging the controllelr, Im just dragging the boat around
-		#and having it return home. It takes less time
-		#left = float(input("Enter left magnitude: "))
-		#right = float(input("Enter right magnitude: "))
-		#duration = int(input("Enter how long  you want it to loop"))
-		
-		#for i in range(duration):
-		#	boat.drive(left,right)
-		#	rospy.sleep(1)
-		
 		switch = int(input("Go home? 1 = yes, else = no"))
 		if (switch == 1):
 			arrivedAtTarget = False;
 			while(arrivedAtTarget == False):
-				arrivedAtTarget = boat.drive_To_Point_M(boat.homeLat,boat.homeLong, False)	
+				arrivedAtTarget = boat.drive_To_Point_M(boat.homeLat,boat.homeLong, True, False)	
 					
 		boolean = int(input("Go again? 1 = yes, else quit"))
 		
